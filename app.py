@@ -1,47 +1,58 @@
-from flask import Flask, request, jsonify
+import os
+from flask import Flask, render_template, request, redirect, url_for
+from dotenv import load_dotenv # Import pour charger le .env
 import psycopg2
+
+# Charge les variables d'environnement du fichier .env
+load_dotenv()
 
 app = Flask(__name__)
 
-# Configuration de la connexion
+# On récupère les identifiants via os.getenv
 db_config = {
-    "host": "localhost",
-    "database": "securite_db",
-    "user": "admin",
-    "password": "password123",
-    "port": "5432"
+    "host": os.getenv("DB_HOST"),
+    "database": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "port": os.getenv("DB_PORT")
 }
 
-@app.route('/user', methods=['GET'])
-def get_user():
-    # On récupère le paramètre 'name' dans l'URL (ex: /user?name=alice)
-    username = request.args.get('name')
-    
-    if not username:
-        return jsonify({"error": "Veuillez fournir un nom"}), 400
+@app.route('/')
+def index():
+    return render_template('index.html')
 
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    
     try:
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
 
-        # --- ZONE DANGEREUSE : CONCATÉNATION DIRECTE ---
-        # C'est ici que l'injection SQL se produit. 
+        # LA FAILLE : Injection par concaténation
         query = f"SELECT * FROM users WHERE username = '{username}'"
-        print(f"Exécution de la requête : {query}") # Pour voir ce qui se passe
+        print(f"DEBUG SQL: {query}")
         
         cur.execute(query)
-        user = cur.fetchone()
+        row = cur.fetchone()
 
         cur.close()
         conn.close()
 
-        if user:
-            return jsonify({"id": user[0], "username": user[1], "password": user[2]})
+        if row:
+            # Succès : On redirige vers la page dashboard en passant le nom
+            return redirect(url_for('dashboard', user=row[1]))
         else:
-            return jsonify({"message": "Utilisateur non trouvé"}), 404
+            return render_template('index.html', error="Utilisateur non trouvé.")
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return render_template('index.html', error=f"Erreur SQL : {e}")
+
+@app.route('/dashboard')
+def dashboard():
+    # On récupère le nom passé dans l'URL pour l'affichage
+    user = request.args.get('user', 'Utilisateur')
+    return render_template('dashboard.html', username=user)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
