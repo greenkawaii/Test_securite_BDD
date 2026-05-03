@@ -36,6 +36,33 @@ def log_audit(user_login, action, status):
 def index():
     return render_template('index.html')
 
+# --- SECTION INSCRIPTION (C'est celle-ci qui manquait) ---
+@app.route('/inscription', methods=['GET', 'POST'])
+def inscription():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password_tape = request.form.get('password')
+
+        # Hachage du mot de passe (Sécurité demandée au TP 2)
+        hashed_password = bcrypt.hashpw(password_tape.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        try:
+            conn = psycopg2.connect(**db_config)
+            cur = conn.cursor()
+            query = "INSERT INTO users (username, password) VALUES (%s, %s)"
+            cur.execute(query, (username, hashed_password))
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            log_audit(username, 'registration', 'success')
+            return redirect(url_for('index'))
+        except Exception as e:
+            log_audit(username, 'registration', f'failed: {e}')
+            return f"Erreur lors de l'inscription : {e}"
+
+    return render_template('inscription.html')
+
 # --- VERSION VULNÉRABLE ---
 @app.route('/login_vulnerable', methods=['POST'])
 def login_vulnerable():
@@ -46,7 +73,7 @@ def login_vulnerable():
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
         
-        # 1. LA FAILLE : Concaténation directe
+        # LA FAILLE : Concaténation directe
         query = f"SELECT username, password FROM users WHERE username = '{username}'"
         cur.execute(query)
         user = cur.fetchone()
@@ -58,15 +85,14 @@ def login_vulnerable():
             username_bdd = user[0]
             hash_bdd = user[1]
 
-            # Vérification si c'est une tentative d'injection SQL
+            # Détection d'injection pour l'audit et le bypass
             is_injection = "'" in username or "OR" in username.upper()
             
             if is_injection:
-                # AUDIT : On enregistre que l'injection a réussi à bypasser le login
                 log_audit(username, 'sql_injection', 'bypassed')
                 return redirect(url_for('dashboard', user=username_bdd))
             
-            # Vérification normale du hash
+            # Vérification normale du mot de passe haché
             if bcrypt.checkpw(password_tape.encode('utf-8'), hash_bdd.encode('utf-8')):
                 log_audit(username_bdd, 'login_vulnerable', 'success')
                 return redirect(url_for('dashboard', user=username_bdd))
@@ -78,7 +104,6 @@ def login_vulnerable():
         return render_template('index.html', error="Utilisateur inconnu.")
         
     except Exception as e:
-        # AUDIT : En cas d'erreur SQL (souvent signe d'une attaque par erreur)
         log_audit(username, 'sql_error_attack', 'failed')
         return render_template('index.html', error=f"Erreur SQL : {e}")
 
@@ -92,7 +117,7 @@ def login_secure():
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
         
-        # 1. SÉCURITÉ : Requête préparée (%s)
+        # SÉCURITÉ : Requête préparée (%s)
         query = "SELECT username, password FROM users WHERE username = %s"
         cur.execute(query, (username,))
         user = cur.fetchone()
@@ -102,7 +127,6 @@ def login_secure():
 
         if user:
             hash_bdd = user[1]
-            # 2. VÉRIFICATION STRICTE DU HASH
             if bcrypt.checkpw(password_tape.encode('utf-8'), hash_bdd.encode('utf-8')):
                 log_audit(user[0], 'login_secure', 'success')
                 return redirect(url_for('dashboard', user=user[0]))
