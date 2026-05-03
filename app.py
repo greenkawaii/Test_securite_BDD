@@ -18,6 +18,20 @@ db_config = {
     "port": os.getenv("DB_PORT")
 }
 
+# --- FONCTION D'AUDIT (TP 2) ---
+def log_audit(user_login, action, status):
+    """Enregistre chaque tentative d'accès dans la table audit_logs"""
+    try:
+        conn = psycopg2.connect(**db_config)
+        cur = conn.cursor()
+        query = "INSERT INTO audit_logs (user_login, action, status) VALUES (%s, %s, %s)"
+        cur.execute(query, (user_login, action, status))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Erreur lors de l'enregistrement de l'audit : {e}")
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -32,9 +46,7 @@ def login_vulnerable():
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
         
-        # 1. LA FAILLE : Concaténation directe (f-string)
-        # Si tu tapes : ' OR 1=1 --
-        # La requête devient : SELECT * FROM users WHERE username = '' OR 1=1 --'
+        # 1. LA FAILLE : Concaténation directe
         query = f"SELECT username, password FROM users WHERE username = '{username}'"
         cur.execute(query)
         user = cur.fetchone()
@@ -46,26 +58,28 @@ def login_vulnerable():
             username_bdd = user[0]
             hash_bdd = user[1]
 
-            # 2. LOGIQUE DE VÉRIFICATION
-            # On laisse passer si :
-            # - C'est une injection (présence de ' ou OR)
-            # - OU si le mot de passe est correct via Bcrypt
+            # Vérification si c'est une tentative d'injection SQL
             is_injection = "'" in username or "OR" in username.upper()
             
             if is_injection:
-                # L'injection a "cassé" la barrière du mot de passe
+                # AUDIT : On enregistre que l'injection a réussi à bypasser le login
+                log_audit(username, 'sql_injection', 'bypassed')
                 return redirect(url_for('dashboard', user=username_bdd))
             
-            # Sinon, on vérifie normalement le hash
+            # Vérification normale du hash
             if bcrypt.checkpw(password_tape.encode('utf-8'), hash_bdd.encode('utf-8')):
+                log_audit(username_bdd, 'login_vulnerable', 'success')
                 return redirect(url_for('dashboard', user=username_bdd))
             else:
+                log_audit(username_bdd, 'login_vulnerable', 'failed_password')
                 return render_template('index.html', error="Mot de passe incorrect.")
         
+        log_audit(username, 'login_vulnerable', 'user_not_found')
         return render_template('index.html', error="Utilisateur inconnu.")
         
     except Exception as e:
-        # On affiche l'erreur SQL pour aider l'attaquant (caractéristique du mode vulnérable)
+        # AUDIT : En cas d'erreur SQL (souvent signe d'une attaque par erreur)
+        log_audit(username, 'sql_error_attack', 'failed')
         return render_template('index.html', error=f"Erreur SQL : {e}")
 
 # --- VERSION SÉCURISÉE ---
@@ -79,7 +93,6 @@ def login_secure():
         cur = conn.cursor()
         
         # 1. SÉCURITÉ : Requête préparée (%s)
-        # L'injection est impossible car l'entrée est traitée comme du texte pur.
         query = "SELECT username, password FROM users WHERE username = %s"
         cur.execute(query, (username,))
         user = cur.fetchone()
@@ -91,14 +104,17 @@ def login_secure():
             hash_bdd = user[1]
             # 2. VÉRIFICATION STRICTE DU HASH
             if bcrypt.checkpw(password_tape.encode('utf-8'), hash_bdd.encode('utf-8')):
+                log_audit(user[0], 'login_secure', 'success')
                 return redirect(url_for('dashboard', user=user[0]))
             else:
+                log_audit(user[0], 'login_secure', 'failed_password')
                 return render_template('index.html', error_secure="Mot de passe incorrect.")
         
+        log_audit(username, 'login_secure', 'user_not_found')
         return render_template('index.html', error_secure="Utilisateur inconnu.")
         
     except Exception as e:
-        # On ne montre pas l'erreur à l'utilisateur par sécurité
+        log_audit(username, 'system_error', 'failed')
         return render_template('index.html', error_secure="Une erreur système est survenue.")
 
 @app.route('/dashboard')
